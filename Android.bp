@@ -64,6 +64,7 @@ cc_binary {
         "//vendor:__subpackages__",
         "//visibility:any_system_partition",
     ],
+    recovery_available: true,
 }
 
 lib_common_srcs = [
