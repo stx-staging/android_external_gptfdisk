@@ -62,6 +62,7 @@ cc_binary {
         "//build/make/tools/otatools_package",
         "//visibility:any_system_partition",
     ],
+    recovery_available: true,
 }
 
 lib_common_srcs = [
