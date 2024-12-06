@@ -11,7 +11,9 @@
  * GNU General Public License for more details.
  */
 
-#include <algorithm>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include "diskio.h"
 
@@ -26,19 +28,54 @@ int DiskIO::OpenForRead(const unsigned char* data, size_t size) {
     return 1;
 }
 
-void DiskIO::MakeRealName(void) {
-    realFilename = userFilename;
-}
+void DiskIO::MakeRealName(void) { this->realFilename = this->userFilename; }
 
 int DiskIO::OpenForRead(void) {
-    return 1;
+  struct stat64 st;
+
+  if (this->isOpen) {
+    if (this->openForWrite) {
+      Close();
+    } else {
+      return 1;
+    }
+  }
+
+  this->fd = open(realFilename.c_str(), O_RDONLY | O_CREAT, S_IRUSR | S_IRGRP | S_IROTH);
+  if (this->fd == -1) {
+    this->realFilename = this->userFilename = "";
+  } else {
+    if (fstat64(fd, &st) == 0) {
+      if (!(S_ISDIR(st.st_mode) || S_ISFIFO(st.st_mode) ||
+            S_ISSOCK(st.st_mode))) {
+        this->isOpen = 1;
+      }
+    }
+  }
+  return this->isOpen;
 }
 
 int DiskIO::OpenForWrite(void) {
+  if ((this->isOpen) && (this->openForWrite)) {
     return 1;
+  }
+
+  Close();
+  this->fd = open(realFilename.c_str(), O_WRONLY | O_CREAT,
+                  S_IWUSR | S_IRUSR | S_IRGRP | S_IROTH);
+  if (fd >= 0) {
+    this->isOpen = 1;
+    this->openForWrite = 1;
+  }
+  return this->isOpen;
 }
 
 void DiskIO::Close(void) {
+  if (this->isOpen) {
+    close(this->fd);
+  }
+  this->isOpen = 0;
+  this->openForWrite = 0;
 }
 
 int DiskIO::GetBlockSize(void) {
@@ -62,23 +99,73 @@ int DiskIO::DiskSync(void) {
 }
 
 int DiskIO::Seek(uint64_t sector) {
-    off_t off = sector * GetBlockSize();
-    if (off >= this->size) {
-        return 0;
-    } else {
-        this->off = off;
-        return 1;
+  int retval = 1;
+  off_t seekTo = sector * static_cast<uint64_t>(GetBlockSize());
+
+  if (!isOpen) {
+    if (OpenForRead() != 1) {
+      retval = 0;
     }
+  }
+
+  if (isOpen && seekTo < this->size) {
+    off_t sought = lseek64(fd, seekTo, SEEK_SET);
+    if (sought != seekTo) {
+      retval = 0;
+    }
+  }
+
+  if (retval) {
+    this->off = seekTo;
+  }
+
+  return retval;
 }
 
 int DiskIO::Read(void* buffer, int numBytes) {
-    int actualBytes = std::min(static_cast<int>(this->size - this->off), numBytes);
+  int actualBytes = 0;
+  if (this->size > this->off) {
+    actualBytes = std::min(static_cast<int>(this->size - this->off), numBytes);
     memcpy(buffer, this->data + this->off, actualBytes);
+  }
     return actualBytes;
 }
 
-int DiskIO::Write(void*, int) {
-    return 0;
+int DiskIO::Write(void *buffer, int numBytes) {
+  int blockSize, i, numBlocks, retval = 0;
+  char *tempSpace;
+
+  if ((!this->isOpen) || (!this->openForWrite)) {
+    OpenForWrite();
+  }
+
+  if (this->isOpen) {
+    blockSize = GetBlockSize();
+    if (numBytes <= blockSize) {
+      numBlocks = 1;
+      tempSpace = new char[blockSize];
+    } else {
+      numBlocks = numBytes / blockSize;
+      if ((numBytes % blockSize) != 0)
+        numBlocks++;
+      tempSpace = new char[numBlocks * blockSize];
+    }
+    if (tempSpace == NULL) {
+      return 0;
+    }
+
+    memcpy(tempSpace, buffer, numBytes);
+    for (i = numBytes; i < numBlocks * blockSize; i++) {
+      tempSpace[i] = 0;
+    }
+    retval = write(fd, tempSpace, numBlocks * blockSize);
+
+    if (((numBlocks * blockSize) != numBytes) && (retval > 0))
+      retval = numBytes;
+
+    delete[] tempSpace;
+  }
+  return retval;
 }
 
 uint64_t DiskIO::DiskSize(int *) {
